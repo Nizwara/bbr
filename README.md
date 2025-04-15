@@ -1,5 +1,5 @@
 # bbr Installer
 
 ```
-wget -O - https://raw.githubusercontent.com/Nizwara/bbr/main/install_bbr.sh | bash
+wget -O - https://raw.githubusercontent.com/Nizwara/bbr/main/bbr.sh | bash
 ```
