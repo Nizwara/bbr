@@ -181,7 +181,7 @@ clean_sysctl_conf() {
 apply_sysctl() {
     log_msg "Menerapkan pengaturan sysctl..."
     sysctl -p >/dev/null 2>&1 || {
-        warn_msg "Gagal menerapkan beberapa pengaturan sysctl. Mungkin kernel tidak mendukung fq."
+        warn_msg "Gagal menerapkan beberapa pengaturan sysctl. Mungkin ada entri yang salah di /etc/sysctl.conf."
         return 1
     }
     success_msg "Pengaturan sysctl diterapkan."
@@ -225,7 +225,11 @@ clean_sysctl_conf
 load_modules || check_and_update_kernel
 
 # Terapkan sysctl
-apply_sysctl || check_and_update_kernel
+apply_sysctl || {
+    warn_msg "Mencoba perbaikan tambahan untuk sysctl..."
+    clean_sysctl_conf
+    sysctl -p >/dev/null 2>&1 || check_and_update_kernel
+}
 
 # Periksa ulang status
 check_bbr_status
