@@ -139,11 +139,12 @@ check_and_update_kernel() {
         else
             apt-get update || error_exit "Gagal memperbarui paket."
             apt-get install -y linux-generic || apt-get install -y linux-image-5.15.0-73-generic || error_exit "Gagal menginstal kernel baru."
+            update-grub || error_exit "Gagal memperbarui GRUB."
             success_msg "Kernel baru diinstal. Reboot diperlukan."
             NEED_REBOOT=1
         fi
     else
-        success_msg "Kernel saat ini ($CURRENT_KERNEL) mendukung BBR."
+        success_msg "Kernel saat ini ($CURRENT_KERNEL) mendukung BBR dan fq."
     fi
 }
 
@@ -166,7 +167,7 @@ clean_sysctl_conf() {
         sed -i 's/net.core.wmem_max = 67108864 net.core.netdev_max_backlog =.*/net.core.wmem_max = 67108864\nnet.core.netdev_max_backlog = 250000/' "$SYSCTL_CONF"
     fi
     
-    # Tambahkan pengaturan BBR jika belum ada
+    # Pastikan pengaturan BBR ada
     if ! grep -q "net.core.default_qdisc=fq" "$SYSCTL_CONF"; then
         echo 'net.core.default_qdisc=fq' >> "$SYSCTL_CONF"
     fi
