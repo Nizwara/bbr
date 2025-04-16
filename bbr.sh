@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Smart BBR Installer & Fixer
-# Tested on Ubuntu/Debian/CentOS
+# Smart BBR Installer & Fixer (Enhanced)
 # Automatically fixes sysctl.conf, kernel issues, and ensures BBR with fq
 
 # Log file
@@ -44,7 +43,6 @@ check_bbr_status() {
     local status=0
     log_msg "Memeriksa status BBR dan qdisc:"
     
-    # Check TCP congestion control
     local tcp_cc=$(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}' 2>/dev/null || echo "unknown")
     if [[ "$tcp_cc" == "bbr" ]]; then
         echo -e "[-] TCP Congestion Control \t: ${GREEN}BBR (Aktif)${NC}"
@@ -53,7 +51,6 @@ check_bbr_status() {
         status=1
     fi
     
-    # Check Kernel module BBR
     if lsmod | grep -q bbr; then
         echo -e "[-] Kernel Module BBR \t\t: ${GREEN}Loaded${NC}"
     else
@@ -61,7 +58,6 @@ check_bbr_status() {
         status=1
     fi
     
-    # Check Default qdisc
     local default_qdisc=$(sysctl net.core.default_qdisc | awk '{print $3}' 2>/dev/null || echo "unknown")
     if [[ "$default_qdisc" == "fq" ]]; then
         echo -e "[-] Default Qdisc \t\t: ${GREEN}fq (OK)${NC}"
@@ -70,7 +66,6 @@ check_bbr_status() {
         status=1
     fi
     
-    # Check sch_fq module
     if lsmod | grep -q sch_fq; then
         echo -e "[-] Modul sch_fq \t\t: ${GREEN}Loaded${NC}"
     else
@@ -148,44 +143,74 @@ check_and_update_kernel() {
     fi
 }
 
-# Fungsi untuk membersihkan /etc/sysctl.conf
+# Fungsi untuk membersihkan /etc/sysctl.conf secara agresif
 clean_sysctl_conf() {
     log_msg "Memeriksa dan membersihkan /etc/sysctl.conf..."
     SYSCTL_CONF="/etc/sysctl.conf"
     SYSCTL_BACKUP="/etc/sysctl.conf.bak-$(date +%F-%H%M%S)"
     cp "$SYSCTL_CONF" "$SYSCTL_BACKUP" || error_exit "Gagal membuat cadangan /etc/sysctl.conf."
+
+    # Buat file sementara untuk menyimpan baris yang valid
+    TEMP_FILE=$(mktemp)
     
-    # Hapus baris yang salah format
-    sed -i '/bbr fs\/file-max/d' "$SYSCTL_CONF"
-    sed -i '/250000 net\/core\/somaxconn/d' "$SYSCTL_CONF"
-    sed -i '/1 net\/ipv4\/tcp_tw_reuse/d' "$SYSCTL_CONF"
-    sed -i '/3 net\/ipv4\/tcp_mem/d' "$SYSCTL_CONF"
-    sed -i '/4096 87380 67108864 net\/ipv4\/tcp_wmem/d' "$SYSCTL_CONF"
-    
-    # Perbaiki baris dengan format salah
-    if grep -q "net.core.wmem_max.*net.core.netdev_max_backlog" "$SYSCTL_CONF"; then
-        sed -i 's/net.core.wmem_max = 67108864 net.core.netdev_max_backlog =.*/net.core.wmem_max = 67108864\nnet.core.netdev_max_backlog = 250000/' "$SYSCTL_CONF"
-    fi
-    
-    # Pastikan pengaturan BBR ada
-    if ! grep -q "net.core.default_qdisc=fq" "$SYSCTL_CONF"; then
-        echo 'net.core.default_qdisc=fq' >> "$SYSCTL_CONF"
-    fi
-    if ! grep -q "net.ipv4.tcp_congestion_control=bbr" "$SYSCTL_CONF"; then
-        echo 'net.ipv4.tcp_congestion_control=bbr' >> "$SYSCTL_CONF"
-    fi
+    # Baca file sysctl.conf baris per baris
+    while IFS= read -r line; do
+        # Lewati baris kosong atau baris komentar
+        if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+            echo "$line" >> "$TEMP_FILE"
+            continue
+        fi
+
+        # Periksa apakah baris memiliki format yang valid (parameter=nilai)
+        if [[ "$line" =~ ^[[:space:]]*[a-zA-Z0-9._-]+[[:space:]]*=[[:space:]]*[a-zA-Z0-9[:space:]]+$ ]]; then
+            # Baris valid, simpan ke file sementara
+            echo "$line" >> "$TEMP_FILE"
+        else
+            # Baris tidak valid, coba pisahkan jika mengandung beberapa pengaturan
+            if [[ "$line" =~ [a-zA-Z0-9._-]+[[:space:]]*=[[:space:]]*[a-zA-Z0-9[:space:]]+ ]]; then
+                # Pisahkan baris menjadi beberapa baris berdasarkan pola parameter=nilai
+                echo "$line" | grep -o '[a-zA-Z0-9._-]\+[[:space:]]*=[[:space:]]*[a-zA-Z0-9[:space:]]\+' | while IFS= read -r new_line; do
+                    echo "$new_line" >> "$TEMP_FILE"
+                done
+            else
+                warn_msg "Baris tidak valid dihapus: $line"
+            fi
+        fi
+    done < "$SYSCTL_CONF"
+
+    # Hapus entri duplikat untuk net.core.default_qdisc dan net.ipv4.tcp_congestion_control
+    sed -i '/net.core.default_qdisc/d' "$TEMP_FILE"
+    sed -i '/net.ipv4.tcp_congestion_control/d' "$TEMP_FILE"
+
+    # Tambahkan pengaturan BBR di akhir file
+    echo "net.core.default_qdisc=fq" >> "$TEMP_FILE"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$TEMP_FILE"
+
+    # Ganti file sysctl.conf dengan versi yang sudah dibersihkan
+    mv "$TEMP_FILE" "$SYSCTL_CONF"
     success_msg "/etc/sysctl.conf diperbarui. Cadangan disimpan di $SYSCTL_BACKUP."
 }
 
-# Fungsi untuk menerapkan sysctl
+# Fungsi untuk menerapkan sysctl dan menangani error
 apply_sysctl() {
     log_msg "Menerapkan pengaturan sysctl..."
-    sysctl -p >/dev/null 2>&1 || {
-        warn_msg "Gagal menerapkan beberapa pengaturan sysctl. Mungkin ada entri yang salah di /etc/sysctl.conf."
-        return 1
-    }
-    success_msg "Pengaturan sysctl diterapkan."
-    return 0
+    SYSCTL_ERROR=$(sysctl -p 2>&1)
+    if [ $? -eq 0 ]; then
+        success_msg "Pengaturan sysctl diterapkan."
+        return 0
+    else
+        warn_msg "Gagal menerapkan beberapa pengaturan sysctl: $SYSCTL_ERROR"
+        # Coba perbaiki dengan membersihkan ulang
+        clean_sysctl_conf
+        SYSCTL_ERROR=$(sysctl -p 2>&1)
+        if [ $? -eq 0 ]; then
+            success_msg "Pengaturan sysctl diterapkan setelah perbaikan."
+            return 0
+        else
+            warn_msg "Masih gagal menerapkan sysctl: $SYSCTL_ERROR"
+            return 1
+        fi
+    fi
 }
 
 # Fungsi untuk memuat modul
@@ -226,8 +251,13 @@ load_modules || check_and_update_kernel
 
 # Terapkan sysctl
 apply_sysctl || {
-    warn_msg "Mencoba perbaikan tambahan untuk sysctl..."
-    clean_sysctl_conf
+    warn_msg "Mencoba perbaikan terakhir: reset ke konfigurasi minimal..."
+    SYSCTL_CONF="/etc/sysctl.conf"
+    SYSCTL_BACKUP="/etc/sysctl.conf.bak-$(date +%F-%H%M%S)"
+    cp "$SYSCTL_CONF" "$SYSCTL_BACKUP"
+    echo "# Minimal sysctl.conf for BBR" > "$SYSCTL_CONF"
+    echo "net.core.default_qdisc=fq" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$SYSCTL_CONF"
     sysctl -p >/dev/null 2>&1 || check_and_update_kernel
 }
 
